@@ -1,11 +1,20 @@
 // import { generateErc20PermitSignature } from "../src/handlers/generate-erc20-permit";
 import { generateErc20PermitSignature, generatePayoutPermit } from "../src";
+import { addGasBuffer, generateErc20Transfer, splitTransferAmount } from "../src/handlers/generate-erc20-transfer";
 // import { generateErc721PermitSignature } from "../src/handlers/generate-erc721-permit";
 import { Context } from "../src/types/context";
 import { cypherText, mockContext, SPENDER } from "./constants";
 import { describe, expect, it, beforeEach, afterEach, jest } from "@jest/globals";
 
 jest.mock("../src/handlers/generate-erc20-permit");
+jest.mock("../src/handlers/generate-erc20-transfer", () => {
+  const actual = jest.requireActual<typeof import("../src/handlers/generate-erc20-transfer")>("../src/handlers/generate-erc20-transfer");
+
+  return {
+    ...actual,
+    generateErc20Transfer: jest.fn(),
+  };
+});
 jest.mock("../src/handlers/generate-erc721-permit");
 
 describe("generatePayoutPermit", () => {
@@ -46,6 +55,16 @@ describe("generatePayoutPermit", () => {
         networkId: 1,
       },
     });
+    (generateErc20Transfer as jest.Mock).mockReturnValue({
+      type: "erc20-transfer",
+      tokenAddress: "TOKEN_ADDRESS",
+      beneficiary: SPENDER,
+      amount: "100",
+      networkId: 1,
+      transactionHash: "0xabc",
+      gasEstimate: "21000",
+      feeTransfers: [],
+    });
   });
 
   afterEach(() => {
@@ -74,5 +93,45 @@ describe("generatePayoutPermit", () => {
       { erc20: { amount: 100, networkId: 1, spender: SPENDER, token: "TOKEN_ADDRESS" } },
       { erc20: { amount: 100, networkId: 1, spender: SPENDER, token: "TOKEN_ADDRESS" } },
     ]);
+  });
+
+  it("should use direct ERC20 transfer when transfer setting is enabled", async () => {
+    context.config.transfer = true;
+
+    const result = await generatePayoutPermit(context, [
+      {
+        type: "ERC20",
+        amount: 100,
+        username: "123",
+        contributionType: "ISSUE",
+        tokenAddress: "TOKEN_ADDRESS",
+      },
+    ]);
+
+    expect(generateErc20Transfer).toHaveBeenCalledWith(context, "123", 100, "TOKEN_ADDRESS");
+    expect(generateErc20PermitSignature).not.toHaveBeenCalled();
+    expect(result).toMatchObject([
+      {
+        type: "erc20-transfer",
+        tokenAddress: "TOKEN_ADDRESS",
+        beneficiary: SPENDER,
+        amount: "100",
+        networkId: 1,
+        transactionHash: "0xabc",
+        gasEstimate: "21000",
+        feeTransfers: [],
+      },
+    ]);
+  });
+
+  it("should split operator fee from direct transfer amount", () => {
+    expect(splitTransferAmount("1000", 250)).toEqual({
+      beneficiaryAmount: "975",
+      operatorFeeAmount: "25",
+    });
+  });
+
+  it("should add a configurable gas buffer to direct transfer estimates", () => {
+    expect(addGasBuffer("21000", 2000).toString()).toBe("25200");
   });
 });
